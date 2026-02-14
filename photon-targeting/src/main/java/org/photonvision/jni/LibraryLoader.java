@@ -1,22 +1,6 @@
-/*
- * Copyright (C) Photon Vision.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */
-
 package org.photonvision.jni;
 
+import org.photonvision.common.hardware.Platform; // 導入你改好的 Platform
 import edu.wpi.first.apriltag.jni.AprilTagJNI;
 import edu.wpi.first.cscore.CameraServerJNI;
 import edu.wpi.first.cscore.OpenCvLoader;
@@ -36,6 +20,7 @@ public class LibraryLoader {
     public static boolean loadWpiLibraries() {
         if (hasWpiLoaded) return true;
 
+        // 停止靜態載入，交由我們手動控制
         NetworkTablesJNI.Helper.setExtractOnStaticLoad(false);
         WPIUtilJNI.Helper.setExtractOnStaticLoad(false);
         CameraServerJNI.Helper.setExtractOnStaticLoad(false);
@@ -44,10 +29,18 @@ public class LibraryLoader {
         WPINetJNI.Helper.setExtractOnStaticLoad(false);
         WPIMathJNI.Helper.setExtractOnStaticLoad(false);
         AprilTagJNI.Helper.setExtractOnStaticLoad(false);
+
         try {
-            // Need to load wpiutil first before checking if the MSVC runtime is valid
+            // 1. 載入基礎 WPI 工具庫
             CombinedRuntimeLoader.loadLibraries(LibraryLoader.class, "wpiutiljni");
-            WPIUtilJNI.checkMsvcRuntime();
+
+            // 2. 只有在 Windows 上才檢查 MSVC Runtime
+            if (Platform.isWindows()) {
+                WPIUtilJNI.checkMsvcRuntime();
+            }
+
+            // 3. 載入其餘所有 WPILib 相關 JNI
+            // 在 macOS 下，這會去搜尋資源檔夾中的 .dylib
             CombinedRuntimeLoader.loadLibraries(
                     LibraryLoader.class,
                     "wpimathjni",
@@ -57,9 +50,12 @@ public class LibraryLoader {
                     "cscorejni",
                     "apriltagjni");
 
+            // 4. 載入 OpenCV
             CombinedRuntimeLoader.loadLibraries(LibraryLoader.class, Core.NATIVE_LIBRARY_NAME);
+            
             hasWpiLoaded = true;
         } catch (IOException e) {
+            System.err.println("無法在 " + Platform.getPlatformName() + " 上載入 WPI 函式庫");
             e.printStackTrace();
             hasWpiLoaded = false;
         }
@@ -70,9 +66,11 @@ public class LibraryLoader {
     public static boolean loadTargeting() {
         if (hasTargetingLoaded) return true;
         try {
+            // 這會載入 libphotontargetingJNI.dylib
             CombinedRuntimeLoader.loadLibraries(LibraryLoader.class, "photontargetingJNI");
             hasTargetingLoaded = true;
         } catch (IOException e) {
+            System.err.println("無法載入 PhotonTargeting JNI");
             e.printStackTrace();
             hasTargetingLoaded = false;
         }
