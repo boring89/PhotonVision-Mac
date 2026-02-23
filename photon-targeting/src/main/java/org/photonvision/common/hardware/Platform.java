@@ -61,18 +61,8 @@ public enum Platform {
             false,
             OSType.LINUX,
             true), // Jetson Nano, Jetson TX2
-    MACOS_X64(
-            "macOS x64", 
-            Platform::getMacModel, 
-            false, 
-            OSType.MACOS, 
-            true),
-    MACOS_AARCH64(
-            "macOS ARM64", 
-            Platform::getMacModel, 
-            false, 
-            OSType.MACOS, 
-            true),
+    MACOS_X64("macOS x64", Platform::getMacModel, false, OSType.MACOS, true),
+    MACOS_AARCH64("macOS ARM64", Platform::getMacModel, false, OSType.MACOS, true),
 
     // PhotonVision Supported (Manual build/install)
     LINUX_ARM64(
@@ -210,11 +200,11 @@ public enum Platform {
 
         if (OS_NAME.startsWith("Mac")) {
             if (OS_ARCH.equals("aarch64")) {
-                return MACOS_AARCH64; // Apple Silicon (M1, M2, M3)
+                return MACOS_AARCH64; // Apple Silicon
             } else if (OS_ARCH.equals("x86_64") || OS_ARCH.equals("amd64")) {
-                return MACOS_X64;    // Intel Mac
+                return MACOS_X64;
             }
-            return MACOS_X64; // 預設回傳 x64 或繼續回傳 MACOS (若你保留舊 Enum)
+            return MACOS_X64;
         }
 
         if (OS_NAME.startsWith("Linux")) {
@@ -302,7 +292,8 @@ public enum Platform {
     static String getMacModel() {
         try {
             Process process = Runtime.getRuntime().exec("sysctl -n hw.model");
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+            try (BufferedReader reader =
+                    new BufferedReader(new InputStreamReader(process.getInputStream()))) {
                 String model = reader.readLine();
                 if (model != null && !model.isEmpty()) {
                     return model.trim();

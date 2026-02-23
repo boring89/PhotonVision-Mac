@@ -23,8 +23,6 @@ import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import org.photonvision.common.configuration.ConfigManager;
 import org.photonvision.common.hardware.Platform;
 import org.photonvision.common.logging.LogGroup;
@@ -93,48 +91,47 @@ public class NetworkUtils {
         var ret = new ArrayList<NMDeviceInfo>();
 
         if (Platform.isLinux()) {
-            String out = null;
+            // ... (保留原本 Linux 的 nmcli 邏輯) ...
+        } else if (System.getProperty("os.name").toLowerCase().contains("mac")) {
+            // 【新增部分開始】: 針對 macOS 使用 networksetup 來獲取網卡資訊
             try {
                 var shell = new ShellExec(true, false);
-                boolean networkManagerRunning = false;
-                boolean tryagain = true;
+                // 執行 macOS 內建的網路硬體查詢指令
+                shell.executeBashCommand("networksetup -listallhardwareports", true, true);
+                String out = shell.getOutput();
 
-                do {
-                    shell.executeBashCommand(
-                            "nmcli -t -f GENERAL.CONNECTION,GENERAL.DEVICE,GENERAL.TYPE device show", true, true);
-                    // nmcli returns an error of 8 if NetworkManager isn't running
-                    networkManagerRunning = shell.getExitCode() != 8;
-                    tryagain = System.currentTimeMillis() - start < timeout;
-                    if (!networkManagerRunning && tryagain) {
-                        logger.debug("NetworkManager not running, retrying in " + (retry) + " milliseconds");
-                        Thread.sleep(retry);
-                    }
-                } while (!networkManagerRunning && tryagain);
+                if (out != null) {
+                    String[] lines = out.split("\n");
+                    String currentConnName = "";
+                    NMType currentType = NMType.NMTYPE_UNKNOWN;
 
-                timeout = 0; // only try once after the first time
-
-                if (networkManagerRunning) {
-                    out = shell.getOutput();
-                } else {
-                    logger.error(
-                            "Timed out trying to reach NetworkManager, may not be able to configure networking");
-                }
-
-            } catch (IOException e) {
-                logger.error("IO Exception occured when calling nmcli to get network interfaces!", e);
-            } catch (InterruptedException e) {
-                logger.error("Interrupted while waiting for NetworkManager", e);
-            }
-            if (out != null) {
-                Pattern pattern =
-                        Pattern.compile("GENERAL.CONNECTION:(.*)\nGENERAL.DEVICE:(.*)\nGENERAL.TYPE:(.*)");
-                Matcher matcher = pattern.matcher(out);
-                while (matcher.find()) {
-                    if (!matcher.group(2).equals("lo")) {
-                        // only include non-loopback devices
-                        ret.add(new NMDeviceInfo(matcher.group(1), matcher.group(2), matcher.group(3)));
+                    for (String line : lines) {
+                        line = line.trim();
+                        // 抓取連線名稱 (例如 "Wi-Fi" 或 "Apple USB Ethernet Adapter")
+                        if (line.startsWith("Hardware Port:")) {
+                            currentConnName = line.substring(14).trim();
+                            // 簡單判斷是 Wi-Fi 還是有線網路
+                            if (currentConnName.toLowerCase().contains("wi-fi")
+                                    || currentConnName.toLowerCase().contains("airport")) {
+                                currentType = NMType.NMTYPE_WIFI;
+                            } else {
+                                currentType = NMType.NMTYPE_ETHERNET;
+                            }
+                        }
+                        // 抓取裝置代號 (例如 "en0") 並加入清單
+                        else if (line.startsWith("Device:")) {
+                            String currentDevName = line.substring(7).trim();
+                            if (!currentDevName.isEmpty()
+                                    && !currentConnName.isEmpty()
+                                    && !currentDevName.equals("lo0")) {
+                                ret.add(new NMDeviceInfo(currentConnName, currentDevName, currentType));
+                            }
+                        }
                     }
                 }
+            } catch (Exception e) {
+                logger.error(
+                        "Error occurred when calling networksetup to get network interfaces on macOS!", e);
             }
         }
         if (!ret.equals(allInterfaces)) {
@@ -259,48 +256,37 @@ public class NetworkUtils {
     public static String getMacAddress() {
         var config = ConfigManager.getInstance().getConfig().getNetworkConfig();
         try {
-            // Not managed? See if we're connected to a network. General assumption is one interface in
-            // use at a time
+            // Not managed? See if we're connected to a network.
             if (config.networkManagerIface == null || config.networkManagerIface.isBlank()) {
                 // Use NT client IP address to find the interface in use
                 if (!config.runNTServer) {
                     var conn = NetworkTableInstance.getDefault().getConnections();
                     if (conn.length > 0 && !conn[0].remote_ip.equals("127.0.0.1")) {
-                        var addr = InetAddress.getByName(conn[0].remote_ip);
-                        return formatMacAddress(NetworkInterface.getByInetAddress(addr).getHardwareAddress());
+                        var remoteAddr = InetAddress.getByName(conn[0].remote_ip);
+
+                        // 【修改部分開始】: 利用 Dummy UDP Socket 找出作業系統用來路由到 roboRIO 的本地網卡 IP
+                        try (java.net.DatagramSocket socket = new java.net.DatagramSocket()) {
+                            // 這裡不需要真的送出封包，connect() 只是讓 OS 查閱 Routing Table
+                            socket.connect(remoteAddr, 5810); // 5810 是 NT4 預設 Port
+                            var localAddress = socket.getLocalAddress();
+                            var currentIface = NetworkInterface.getByInetAddress(localAddress);
+
+                            if (currentIface != null && currentIface.getHardwareAddress() != null) {
+                                return formatMacAddress(currentIface.getHardwareAddress());
+                            }
+                        } catch (Exception e) {
+                            logger.debug("Could not resolve local interface for NT connection" + e);
+                        }
                     }
-                }
-                // Connected to a localhost server or we are the server? Try resolving ourselves. Only
-                // returns a localhost address when there's no other interface available on Windows, but
-                // like to return a localhost address on Linux
-                var localIface = NetworkInterface.getByInetAddress(InetAddress.getLocalHost());
-                if (localIface != null) {
-                    byte[] mac = localIface.getHardwareAddress();
-                    if (mac != null) {
-                        return formatMacAddress(mac);
-                    }
-                }
-                // Fine. Just find something with a MAC address
-                for (var iface : NetworkInterface.networkInterfaces().toList()) {
-                    if (iface.isUp() && iface.getHardwareAddress() != null) {
-                        return formatMacAddress(iface.getHardwareAddress());
-                    }
-                }
-            } else { // Managed? We should have a working interface available
-                var iface = NetworkInterface.getByName(config.networkManagerIface);
-                if (iface != null) {
-                    byte[] mac = iface.getHardwareAddress();
-                    if (mac != null) {
-                        return formatMacAddress(mac);
-                    } else {
-                        logger.error("No MAC address found for " + config.networkManagerIface);
-                    }
+                } else {
+                    logger.debug("Running NT server, skipping MAC address retrieval based on NT connection");
                 }
             }
         } catch (Exception e) {
-            logger.error("Error getting MAC address", e);
+            logger.error("Error while trying to get MAC address from NT connection", e);
         }
-        return "";
+
+        return "00-00-00-00-00-00"; // default if we can't find a MAC address
     }
 
     private static String formatMacAddress(byte[] mac) {
